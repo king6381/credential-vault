@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-🔐 凭证加密管理模块
+🔐 凭证加密管理模块 v1.1.0
 
 GPG AES-256 对称加密，所有密码/Token 集中管理。
+
+依赖: Python 3.8+, GPG (gnupg)
 
 用法:
     from cred_manager import get_credential, add_credential
@@ -26,6 +28,8 @@ import json
 import os
 import sys
 import getpass
+import tempfile
+import stat
 
 # ═══════════════════════════════════════════════════════════
 # 配置 — 修改这两项适配你的环境
@@ -36,7 +40,6 @@ CRED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'credential
 
 # 主密码：从环境变量读取，不硬编码
 # 设置方式: export CRED_MASTER_PASS="你的主密码"
-# 或者在 .bashrc / .zshrc 里加上这行
 MASTER_PASS = os.environ.get('CRED_MASTER_PASS', '')
 
 # ═══════════════════════════════════════════════════════════
@@ -51,6 +54,75 @@ def _get_master_pass():
     return getpass.getpass('🔑 输入主密码: ')
 
 
+def _gpg_decrypt(password: str, input_file: str) -> str:
+    """
+    GPG 解密，通过 --passphrase-fd 从 stdin 传入密码。
+    避免密码出现在命令行参数中（ps aux 可见）。
+    """
+    proc = subprocess.Popen(
+        ['gpg', '--batch', '--yes', '--passphrase-fd', '0',
+         '--decrypt', input_file],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    stdout, stderr = proc.communicate(input=password.encode('utf-8'))
+    if proc.returncode != 0:
+        raise RuntimeError(f"解密失败（密码错误？）: {stderr.decode()}")
+    return stdout.decode('utf-8')
+
+
+def _gpg_encrypt(password: str, input_file: str, output_file: str):
+    """
+    GPG 加密，通过 --passphrase-fd 从 stdin 传入密码。
+    避免密码出现在命令行参数中。
+    """
+    proc = subprocess.Popen(
+        ['gpg', '--batch', '--yes', '--passphrase-fd', '0',
+         '--symmetric', '--cipher-algo', 'AES256',
+         '-o', output_file, input_file],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    _, stderr = proc.communicate(input=password.encode('utf-8'))
+    if proc.returncode != 0:
+        raise RuntimeError(f"加密失败: {stderr.decode()}")
+
+
+def _secure_write_temp(data: str) -> str:
+    """
+    安全地写入临时文件：
+    1. 创建时设置 600 权限（仅 owner 可读写）
+    2. 使用 mkstemp 而非 NamedTemporaryFile（更可控）
+    返回临时文件路径，调用方负责删除。
+    """
+    fd, tmp_path = tempfile.mkstemp(suffix='.json', prefix='cred_')
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)  # 600
+        os.write(fd, data.encode('utf-8'))
+    finally:
+        os.close(fd)
+    return tmp_path
+
+
+def _secure_delete(path: str):
+    """安全删除临时文件：先覆写再删除"""
+    try:
+        size = os.path.getsize(path)
+        with open(path, 'wb') as f:
+            f.write(b'\x00' * size)  # 零覆写
+            f.flush()
+            os.fsync(f.fileno())
+        os.unlink(path)
+    except OSError:
+        # 最坏情况：至少尝试删除
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 def _load_credentials():
     """解密并加载凭证（带内存缓存）"""
     global _cache
@@ -61,40 +133,23 @@ def _load_credentials():
         raise FileNotFoundError(f"加密凭证文件不存在: {CRED_FILE}\n请先运行: python3 cred_manager.py init")
 
     password = _get_master_pass()
-    result = subprocess.run(
-        ['gpg', '--batch', '--yes', '--passphrase', password, '--decrypt', CRED_FILE],
-        capture_output=True, text=True
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"解密失败（密码错误？）: {result.stderr}")
-
-    _cache = json.loads(result.stdout)
+    plaintext = _gpg_decrypt(password, CRED_FILE)
+    _cache = json.loads(plaintext)
     return _cache
 
 
 def _save_credentials(creds: dict):
-    """加密并保存凭证"""
-    import tempfile
+    """加密并保存凭证（临时文件权限 600 + 安全删除）"""
     password = _get_master_pass()
+    json_str = json.dumps(creds, indent=2, ensure_ascii=False)
 
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump(creds, f, indent=2, ensure_ascii=False)
-        tmp_path = f.name
-
+    tmp_path = _secure_write_temp(json_str)
     try:
-        result = subprocess.run(
-            ['gpg', '--batch', '--yes', '--passphrase', password,
-             '--symmetric', '--cipher-algo', 'AES256', '-o', CRED_FILE, tmp_path],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"加密失败: {result.stderr}")
-
+        _gpg_encrypt(password, tmp_path, CRED_FILE)
         global _cache
         _cache = creds
     finally:
-        os.unlink(tmp_path)
+        _secure_delete(tmp_path)
 
 
 def get_credential(service: str, key: str) -> str:
@@ -159,30 +214,32 @@ def init_credentials():
         print("❌ 两次密码不一致")
         return
 
-    # 创建空凭证
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        json.dump({}, f)
-        tmp_path = f.name
+    if len(password) < 8:
+        print("⚠️  警告: 主密码少于 8 位，建议使用更强的密码")
 
+    json_str = json.dumps({})
+    tmp_path = _secure_write_temp(json_str)
     try:
-        result = subprocess.run(
-            ['gpg', '--batch', '--yes', '--passphrase', password,
-             '--symmetric', '--cipher-algo', 'AES256', '-o', CRED_FILE, tmp_path],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            print(f"❌ 初始化失败: {result.stderr}")
-            return
+        _gpg_encrypt(password, tmp_path, CRED_FILE)
     finally:
-        os.unlink(tmp_path)
+        _secure_delete(tmp_path)
+
+    # 设置 .gpg 文件权限为 600
+    os.chmod(CRED_FILE, stat.S_IRUSR | stat.S_IWUSR)
 
     print(f"✅ 凭证文件已创建: {CRED_FILE}")
     print()
     print("📌 下一步:")
-    print(f'  1. 设置环境变量: export CRED_MASTER_PASS="{password}"')
+    print(f'  1. 设置环境变量 (二选一):')
+    print(f'     方式A: export CRED_MASTER_PASS="你的密码" (当前终端)')
+    print(f'     方式B: 写入 ~/.bashrc 并 chmod 600 ~/.bashrc')
     print(f'  2. 添加凭证: python3 cred_manager.py add 服务名')
     print(f'  3. 查看凭证: python3 cred_manager.py list')
+    print()
+    print("⚠️  安全提示:")
+    print("  • 主密码请牢记，丢失无法恢复")
+    print("  • .gpg 文件请定期备份到安全位置")
+    print("  • 不要将 .gpg 文件和主密码存放在同一处")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -191,7 +248,7 @@ def init_credentials():
 
 def _cli():
     usage = """
-🔐 凭证加密管理工具
+🔐 凭证加密管理工具 v1.1.0
 
 命令:
   python3 cred_manager.py init                 首次初始化
@@ -202,6 +259,10 @@ def _cli():
 
 环境变量:
   CRED_MASTER_PASS    主密码（不设置则交互输入）
+
+依赖:
+  Python 3.8+, GPG (gnupg) — Linux/macOS 通常预装
+  检查: gpg --version
 """
 
     if len(sys.argv) < 2:
@@ -211,6 +272,16 @@ def _cli():
     cmd = sys.argv[1]
 
     if cmd == 'init':
+        # 检查 GPG 是否可用
+        try:
+            subprocess.run(['gpg', '--version'], capture_output=True, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            print("❌ 未找到 GPG。请先安装:")
+            print("   Linux (Debian/Ubuntu): sudo apt install gnupg")
+            print("   Linux (RHEL/CentOS):   sudo yum install gnupg2")
+            print("   macOS:                 brew install gnupg")
+            print("   Windows:               https://gpg4win.org")
+            return
         init_credentials()
 
     elif cmd == 'list':
