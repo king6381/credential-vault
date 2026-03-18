@@ -8,6 +8,8 @@
 #
 # 前置:
 #   export CRED_MASTER_PASS="你的主密码"
+#
+# 依赖: GPG (gnupg), Python 3.8+
 
 CRED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CRED_FILE="$CRED_DIR/credentials.json.gpg"
@@ -32,7 +34,8 @@ cred_get() {
         return 1
     fi
 
-    gpg --batch --yes --passphrase "$CRED_MASTER_PASS" --decrypt "$CRED_FILE" 2>/dev/null | \
+    # 通过 stdin (--passphrase-fd 0) 传入密码，避免 ps aux 泄露
+    echo "$CRED_MASTER_PASS" | gpg --batch --yes --passphrase-fd 0 --decrypt "$CRED_FILE" 2>/dev/null | \
         python3 -c "import sys,json; d=json.load(sys.stdin); print(d['$service']['$key'])" 2>/dev/null
 }
 
@@ -47,7 +50,7 @@ cred_list() {
         return 1
     fi
 
-    gpg --batch --yes --passphrase "$CRED_MASTER_PASS" --decrypt "$CRED_FILE" 2>/dev/null | \
+    echo "$CRED_MASTER_PASS" | gpg --batch --yes --passphrase-fd 0 --decrypt "$CRED_FILE" 2>/dev/null | \
         python3 -c "import sys,json; [print(f'  • {k}') for k in json.load(sys.stdin).keys()]"
 }
 

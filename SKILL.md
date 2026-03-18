@@ -1,27 +1,47 @@
 ---
 name: credential-vault
-description: "GPG AES-256 encrypted credential management. Use when the user needs to securely store, retrieve, or manage passwords, API tokens, and secrets. Supports init/add/get/list/remove operations. Requires GPG (gnupg) installed on the system. Triggers: password management, secret storage, credential encryption, token vault, secure credentials, 凭证管理, 密码加密, 安全存储."
+description: "GPG AES-256 encrypted credential management. Requires: GPG (gnupg) installed, CRED_MASTER_PASS env var for non-interactive use. Use when the user needs to securely store, retrieve, or manage passwords, API tokens, and secrets. Supports init/add/get/list/remove operations. Triggers: password management, secret storage, credential encryption, token vault, secure credentials, 凭证管理, 密码加密, 安全存储."
 ---
 
 # Credential Vault
 
-GPG AES-256 encrypted credential manager — one file, all secrets, zero plaintext in final storage.
+GPG AES-256 encrypted credential manager — one file, all secrets.
 
 ## Dependencies
 
 - **Python 3.8+**
 - **GPG (gnupg)** — pre-installed on most Linux/macOS; Windows needs [Gpg4win](https://gpg4win.org)
-- Check: `gpg --version` (the `init` command will verify this automatically)
+- Check: `gpg --version` (the `init` command verifies this automatically)
+
+## Required Environment Variables
+
+| Variable | Purpose | Required? |
+|----------|---------|-----------|
+| `CRED_MASTER_PASS` | Master password for encrypt/decrypt | Required for non-interactive use; if unset, prompts interactively |
 
 ## Security Model
 
-- **At rest**: credentials stored as AES-256 encrypted `.gpg` file (permissions 600)
-- **In transit**: temporary plaintext file exists briefly during encrypt/decrypt operations
-  - Permissions set to 600 (owner-only) via `mkstemp` + `fchmod`
-  - Securely deleted after use (zero-overwrite + unlink)
-  - Duration: milliseconds (only during GPG subprocess execution)
-- **Master password**: passed to GPG via `--passphrase-fd` (stdin pipe), never in command-line arguments
-- **Environment variable**: `CRED_MASTER_PASS` — set in `~/.bashrc` with `chmod 600`
+### How it works
+1. All credentials stored as AES-256 encrypted `.gpg` file (permissions 600)
+2. Master password passed to GPG via `--passphrase-fd` (stdin pipe) — **never** in command-line arguments
+3. Shell helper also uses `--passphrase-fd 0` (echo pipe) — **not** `--passphrase`
+
+### Temporary plaintext on disk
+During save/encrypt operations, plaintext JSON briefly exists as a temporary file:
+- Created with `mkstemp` + `fchmod 600` (owner-only read/write)
+- Exists for milliseconds (only during GPG subprocess execution)
+- Securely deleted: zero-overwrite → fsync → unlink
+- **Risk**: on some systems, temp file contents may be recoverable from disk. For higher security, use a tmpfs/ramfs mount or a dedicated secrets manager.
+
+### Master password storage
+The `CRED_MASTER_PASS` environment variable is readable by same-user processes via `/proc/*/environ` on Linux.
+
+**Recommended approaches (from most to least secure):**
+1. **gpg-agent / pinentry** — enter password interactively each time (most secure)
+2. **Runtime injection** — set via a secrets manager or session-scoped `read -s` prompt
+3. **Environment variable** — `export CRED_MASTER_PASS="..."` in current shell (convenient but less secure)
+
+**Avoid:** persisting the master password in plaintext files (e.g., `~/.bashrc`). If you must, ensure `chmod 600` and understand the trade-off.
 
 ## Quick Start
 
@@ -29,10 +49,10 @@ GPG AES-256 encrypted credential manager — one file, all secrets, zero plainte
 # Initialize (first time) — checks GPG availability
 python3 SKILL_DIR/scripts/cred_manager.py init
 
-# Add credentials
+# Add credentials (interactive)
 python3 SKILL_DIR/scripts/cred_manager.py add myservice
 
-# Use in scripts
+# Non-interactive use
 export CRED_MASTER_PASS="your_password"
 ```
 
@@ -46,7 +66,7 @@ Replace `SKILL_DIR` with the actual skill directory path.
 python3 scripts/cred_manager.py init
 ```
 
-Creates encrypted `credentials.json.gpg` (permissions 600) in the same directory. Verifies GPG is installed first. User sets master password interactively (minimum 8 chars recommended).
+Verifies GPG is installed, creates encrypted `credentials.json.gpg` (permissions 600). Warns if password < 8 chars.
 
 ### Add / Update Credentials
 
@@ -82,24 +102,13 @@ TOKEN=$(cred_get github token)
 **CLI:**
 ```bash
 python3 scripts/cred_manager.py get github token
-python3 scripts/cred_manager.py get github        # full service
-python3 scripts/cred_manager.py list               # all services
+python3 scripts/cred_manager.py list
 ```
 
 ### Remove
 
 ```bash
 python3 scripts/cred_manager.py remove <service_name>
-```
-
-## Master Password
-
-Priority: environment variable `CRED_MASTER_PASS` → interactive prompt.
-
-Recommend adding to `~/.bashrc`:
-```bash
-export CRED_MASTER_PASS="your_password"
-chmod 600 ~/.bashrc
 ```
 
 ## Integration Pattern
@@ -114,9 +123,12 @@ from cred_manager import get_credential
 password = get_credential('myservice', 'pass')
 ```
 
-## Limitations
+## Known Limitations
 
-- Temporary plaintext file briefly exists on disk during encrypt/save operations (mitigated by 600 permissions + secure delete)
-- Master password in environment variable is visible to same-user processes (`/proc/*/environ`)
-- No key rotation mechanism — manual re-encrypt required
-- Single-user design — not suitable for enterprise multi-tenant scenarios
+1. **Temporary plaintext on disk** — briefly exists during encrypt operations (mitigated by 600 permissions + secure delete, but not zero-risk)
+2. **Environment variable visibility** — `CRED_MASTER_PASS` readable by same-user processes on Linux
+3. **No key rotation** — manual re-encrypt required to change master password
+4. **Single-user design** — not for enterprise multi-tenant use
+5. **No tamper detection** — `.gpg` file integrity not independently verified
+
+For higher security requirements, consider: OS keyring, `pass`, HashiCorp Vault, or cloud KMS.
