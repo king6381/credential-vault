@@ -1,7 +1,15 @@
 ---
 name: credential-vault
-version: 1.3.0
-description: "GPG AES-256 encrypted credential management. Requires: GPG (gnupg) installed, CRED_MASTER_PASS env var for non-interactive use. Use when the user needs to securely store, retrieve, or manage passwords, API tokens, and secrets. Supports init/add/get/list/remove operations. Triggers: password management, secret storage, credential encryption, token vault, secure credentials, 凭证管理, 密码加密, 安全存储."
+version: 1.3.1
+description: "GPG AES-256 encrypted credential management. Requires: GPG (gnupg) installed, Python 3.8+, CRED_MASTER_PASS env var for non-interactive use. Use when the user needs to securely store, retrieve, or manage passwords, API tokens, and secrets. Supports init/add/get/list/remove operations. Triggers: password management, secret storage, credential encryption, token vault, secure credentials, 凭证管理, 密码加密, 安全存储."
+metadata:
+  clawdbot:
+    requires:
+      bins:
+        - gpg
+        - python3
+      env:
+        - CRED_MASTER_PASS
 ---
 
 # 🛡️ Credential Vault / 凭证保险箱
@@ -171,6 +179,7 @@ For higher security requirements, consider: OS keyring, `pass`, HashiCorp Vault,
 
 ## Changelog / 更新日志
 
+- **v1.3.1** — Fix registry metadata: declare `gpg`, `python3` bins and `CRED_MASTER_PASS` env var / 修复注册表元数据：声明依赖二进制和环境变量
 - **v1.3.0** — Bilingual documentation (EN/CN) / 中英双语文档；bilingual CLI output / 双语 CLI 输出
 - **v1.2.0** — Security hardening: `--passphrase-fd` for both Python & Shell; honest temp-file disclosure; 3-tier password advice / 安全加固
 - **v1.1.0** — Python `--passphrase-fd` stdin pipe / Python 端 stdin 管道传密码
