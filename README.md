@@ -205,6 +205,18 @@ python3 cred_manager.py list
 
 ---
 
+## 🛡️ 商标与知识产权
+
+**"雷神之锤"**、**"雷神之脑"**、**"雷神之盾"** 及 **"Mjolnir"** 系列名称为作者保留商标权利。
+
+- **代码协议：** MIT License（自由使用、修改、分发）
+- **名称限制：** "雷神之"系列名称不得用于未经授权的衍生项目或商业用途
+- **版权归属：** Copyright (c) 2026 雷哥 (king6381)
+
+如有疑问，请联系：king6381@hotmail.com
+
+---
+
 <p align="center">
   <strong>🛡️ 雷神之盾 — 安全，从不裸奔开始</strong><br>
   <em>"The shield that guards the realms of code."</em>
